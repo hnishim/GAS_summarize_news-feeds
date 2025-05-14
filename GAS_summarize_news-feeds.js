@@ -410,54 +410,43 @@ class ImportFeedUpdater {
   }
 
   /**
-   * すべてのシートのIMPORTFEED数式を更新する
+   * IMPORTFEED数式を更新する
    */
   async refreshAllSheets() {
     Logger.log('IMPORTFEED数式の更新を開始します...');
 
     try {
-      const sheets = this.spreadsheetService.spreadsheet.getSheets();
-      if (sheets.length === 0) {
-        throw new Error('スプレッドシートにシートが見つかりませんでした。');
+      const rssListSheet = this.spreadsheetService.getRssListSheet();
+      if (!rssListSheet) {
+        throw new Error(`シート "${CONFIG.SHEETS.RSS_LIST}" が見つかりませんでした。`);
       }
 
-      let totalRefreshCount = 0;
-      for (const sheet of sheets) {
-        const refreshCount = await this._refreshSheet(sheet);
-        totalRefreshCount += refreshCount;
+      const lastRow = rssListSheet.getLastRow();
+      if (lastRow < 2) {
+        Logger.log('更新対象の数式が見つかりませんでした。');
+        return;
       }
 
-      Logger.log(`更新完了: ${totalRefreshCount} 個の数式を更新しました。`);
+      const targetRange = rssListSheet.getRange(2, 3, lastRow - 1, 4); // C2から最終行のF列まで
+      const formulas = targetRange.getFormulas();
+      let refreshCount = 0;
+
+      for (let i = 0; i < formulas.length; i++) {
+        for (let j = 0; j < formulas[i].length; j++) {
+          const formula = formulas[i][j];
+          if (this._isImportFeedFormula(formula)) {
+            const cell = targetRange.getCell(i + 1, j + 1);
+            cell.setFormula(formula);
+            refreshCount++;
+            Logger.log(`数式を更新しました: ${formula}`);
+          }
+        }
+      }
+
+      Logger.log(`更新完了: ${refreshCount} 個の数式を更新しました。`);
     } catch (error) {
       Logger.log(`エラー: ${error.toString()}`);
       throw error;
-    }
-  }
-
-  /**
-   * 個別のシートのIMPORTFEED数式を更新する
-   * @param {Sheet} sheet 更新対象のシート
-   * @returns {number} 更新した数式の数
-   */
-  async _refreshSheet(sheet) {
-    const sheetName = sheet.getName();
-    Logger.log(`シート "${sheetName}" の更新を開始...`);
-
-    try {
-      const cellA1 = sheet.getRange('A1');
-      const formula = cellA1.getFormula();
-
-      if (this._isImportFeedFormula(formula)) {
-        cellA1.setFormula(formula);
-        Logger.log(`シート "${sheetName}" の数式を更新しました。`);
-        return 1;
-      }
-
-      Logger.log(`シート "${sheetName}" はIMPORTFEED数式ではありません。`);
-      return 0;
-    } catch (error) {
-      Logger.log(`シート "${sheetName}" の更新中にエラー: ${error.toString()}`);
-      return 0;
     }
   }
 
