@@ -31,6 +31,7 @@ const CONFIG = {
 ## 対象記事（例）
 - 創薬研究開発に関わる内容
 - 創薬研究開発におけるパートナーシップ、共同研究契約、産学連携
+- 治験開始、医薬品の承認申請・承認、医薬品の適用拡大
 
 ## 対象外記事（例）
 以下のような内容は対象外とし、出力に含めないでください。
@@ -40,7 +41,8 @@ const CONFIG = {
 - Corporate Social Responsibility 活動
 - 創薬に関係のない記事（一般薬、ジェネリック医薬品、医療機器食品 等）
 
-# URL\n\n`,
+# URL
+\n`,
     EMAIL: `# 依頼内容
 以下は製薬会社等の記事です。内容を確認し、日本のAI創薬スタートアップを想定ユーザーとして、有用な情報提供をしてください。
 
@@ -53,6 +55,7 @@ const CONFIG = {
 ## 対象記事（例）
 - 創薬研究開発に関わる内容
 - 創薬研究開発におけるパートナーシップ、共同研究契約、産学連携
+- 治験開始、医薬品の承認申請・承認、医薬品の適用拡大
 
 ## 対象外記事（例）
 以下のような内容は対象外とし、出力に含めないでください。
@@ -62,7 +65,8 @@ const CONFIG = {
 - Corporate Social Responsibility 活動
 - 創薬に関係のない記事（一般薬、ジェネリック医薬品、医療機器食品 等）
 
-# 記事\n\n`
+# 記事
+\n`
   }
 };
 
@@ -462,26 +466,35 @@ class ImportFeedUpdater {
   }
 }
 
-/**
- * スプレッドシートの内容を要約する
- */
 function summarizeSpreadsheetWithGemini() {
-  const summarizer = new SpreadsheetSummarizer();
-  return summarizer.summarize();
-}
+  const slackService = new SlackService(); // Slack通知用にインスタンスを作成
 
-/**
- * ニュースレターメールを処理する
- */
-function processNewslettersFromEmails() {
-  const processor = new EmailProcessor();
-  return processor.processNewsletters();
-}
+  // IMPORTFEED数式を更新
+  try {
+    const updater = new ImportFeedUpdater();
+    updater.refreshAllSheets();
+  } catch (error) {
+    const errorMessage = `IMPORTFEED数式の更新中にエラーが発生しました: ${error.toString()}`;
+    Logger.log(errorMessage);
+    slackService.sendMessage(errorMessage); // Slackにエラー通知
+  }
+  
+  // ニュースレターメールをシートに転記
+  try {
+    const processor = new EmailProcessor();
+    processor.processNewsletters();
+  } catch (error) {
+    const errorMessage = `ニュースレターメールの処理中にエラーが発生しました: ${error.toString()}`;
+    Logger.log(errorMessage);
+    slackService.sendMessage(errorMessage); // Slackにエラー通知
+  }
 
-/**
- * IMPORTFEED数式を更新する
- */
-function refreshImportFeedFormulas() {
-  const updater = new ImportFeedUpdater();
-  return updater.refreshAllSheets();
+  // スプレッドシートの内容を要約
+  try {
+    const summarizer = new SpreadsheetSummarizer();
+    summarizer.summarize();
+  } catch (error) {
+    Logger.log(`スプレッドシートの要約処理中にエラーが発生しました: ${error.toString()}`);
+    throw error; // エラーを再スローして、GASの実行ログに記録されるようにする
+  }
 }
