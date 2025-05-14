@@ -164,98 +164,144 @@ class SpreadsheetService {
   }
 }
 
-// main.js
-function summarizeSpreadsheetWithGemini() {
-  const geminiService = new GeminiService();
-  const slackService = new SlackService();
-  const spreadsheetService = new SpreadsheetService();
-
-  try {
-    // RSSフィードの処理
-    processRssFeeds(geminiService, slackService, spreadsheetService);
-    
-    // メールの処理
-    processEmails(geminiService, slackService, spreadsheetService);
-  } catch (e) {
-    Logger.log(`エラーが発生しました: ${e.toString()}`);
+/**
+ * スプレッドシートの内容を要約するクラス
+ */
+class SpreadsheetSummarizer {
+  constructor() {
+    this.geminiService = new GeminiService();
+    this.slackService = new SlackService();
+    this.spreadsheetService = new SpreadsheetService();
   }
 
-  function processRssFeeds(geminiService, slackService, spreadsheetService) {
-    const rssListSheet = spreadsheetService.getRssListSheet();
-    const lastRow = rssListSheet.getLastRow();
-  
-    for (let i = 2; i <= lastRow; i++) {
-      const row = rssListSheet.getRange(i, 2, 1, 5);
-      let [sheetName, title, summary, url, created] = row.getValues()[0];
-  
-      const rowToCopy = rssListSheet.getRange(i, 3, 1, 4);
-  
-      if (url === '#N/A') {
-        Logger.log('フィードが取得されていないのでスキップします。');
-        continue;
-      }
-  
-      const targetSheet = spreadsheetService.spreadsheet.getSheetByName(sheetName);
-      const lastUrlInTargetSheet = targetSheet.getRange(targetSheet.getLastRow(), 3).getValue();
-  
-      if (url === lastUrlInTargetSheet) {
-        Logger.log('処理済みのフィードのためスキップします。' + url);
-        continue;
-      }
-  
-      if (sheetName == 'ミクスOnline') {
-        url = 'https://www.mixonline.jp' + url;
-      }
-  
-      // 新しい行を追加
-      const newRow = targetSheet.getLastRow() + 1;
-      spreadsheetService.copyRowToSheet(rowToCopy, targetSheet, newRow);
-  
-      // 要約処理
-      const prompt = CONFIG.PROMPTS.RSS + url;
-      const preFix = `*${sheetName},* ${created}`;
-      const postFix = url;
-  
-      processSummary(geminiService, slackService, prompt, preFix, postFix);
+  /**
+   * スプレッドシートの内容を要約する
+   */
+  async summarize() {
+    try {
+      await this._processRssFeeds();
+      await this._processEmails();
+    } catch (error) {
+      Logger.log(`エラーが発生しました: ${error.toString()}`);
+      throw error;
     }
   }
-  
-  function processEmails(geminiService, slackService, spreadsheetService) {
-    const emailSheet = spreadsheetService.getEmailSheet();
+
+  /**
+   * RSSフィードを処理する
+   */
+  async _processRssFeeds() {
+    const rssListSheet = this.spreadsheetService.getRssListSheet();
+    const lastRow = rssListSheet.getLastRow();
+
+    for (let i = 2; i <= lastRow; i++) {
+      try {
+        const row = rssListSheet.getRange(i, 2, 1, 5);
+        const [sheetName, title, summary, url, created] = row.getValues()[0];
+
+        if (url === '#N/A') {
+          Logger.log('フィードが取得されていないのでスキップします。');
+          continue;
+        }
+
+        const targetSheet = this.spreadsheetService.spreadsheet.getSheetByName(sheetName);
+        const lastUrlInTargetSheet = targetSheet.getRange(targetSheet.getLastRow(), 3).getValue();
+
+        if (url === lastUrlInTargetSheet) {
+          Logger.log('処理済みのフィードのためスキップします。' + url);
+          continue;
+        }
+
+        const processedUrl = this._processUrl(sheetName, url);
+        await this._processFeed(sheetName, created, processedUrl, row);
+      } catch (error) {
+        Logger.log(`RSSフィードの処理中にエラー: ${error.toString()}`);
+      }
+    }
+  }
+
+  /**
+   * URLを処理する
+   * @param {string} sheetName シート名
+   * @param {string} url URL
+   * @returns {string} 処理後のURL
+   */
+  _processUrl(sheetName, url) {
+    if (sheetName === 'ミクスOnline') {
+      return 'https://www.mixonline.jp' + url;
+    }
+    return url;
+  }
+
+  /**
+   * フィードを処理する
+   * @param {string} sheetName シート名
+   * @param {Date} created 作成日時
+   * @param {string} url URL
+   * @param {Range} row 行データ
+   */
+  async _processFeed(sheetName, created, url, row) {
+    const targetSheet = this.spreadsheetService.spreadsheet.getSheetByName(sheetName);
+    const newRow = targetSheet.getLastRow() + 1;
+    const rowToCopy = row.getSheet().getRange(row.getRow(), 3, 1, 4);
+    
+    this.spreadsheetService.copyRowToSheet(rowToCopy, targetSheet, newRow);
+
+    const prompt = CONFIG.PROMPTS.RSS + url;
+    const preFix = `*${sheetName},* ${created}`;
+    const postFix = url;
+
+    await this._processSummary(prompt, preFix, postFix);
+  }
+
+  /**
+   * メールを処理する
+   */
+  async _processEmails() {
+    const emailSheet = this.spreadsheetService.getEmailSheet();
     if (!emailSheet) {
       Logger.log(`注意: シート "${CONFIG.SHEETS.EMAIL}" が見つかりませんでした。`);
       return;
     }
-  
+
     const lastRow = emailSheet.getLastRow();
     for (let i = 1; i <= lastRow; i++) {
-      const [title, summary, from, created] = emailSheet.getRange(i, 1, 1, 4).getValues()[0];
-      
-      const prompt = CONFIG.PROMPTS.EMAIL + title + summary;
-      const preFix = `*${from},* ${created}`;
-      const postFix = '';
-  
-      processSummary(geminiService, slackService, prompt, preFix, postFix);
+      try {
+        const [title, summary, from, created] = emailSheet.getRange(i, 1, 1, 4).getValues()[0];
+        
+        const prompt = CONFIG.PROMPTS.EMAIL + title + summary;
+        const preFix = `*${from},* ${created}`;
+        const postFix = '';
+
+        await this._processSummary(prompt, preFix, postFix);
+      } catch (error) {
+        Logger.log(`メールの処理中にエラー: ${error.toString()}`);
+      }
     }
-  
-    // メールシートをクリア
+
     emailSheet.clearContents();
   }
-  
-  async function processSummary(geminiService, slackService, prompt, preFix, postFix) {
+
+  /**
+   * 要約を処理する
+   * @param {string} prompt プロンプト
+   * @param {string} preFix プレフィックス
+   * @param {string} postFix ポストフィックス
+   */
+  async _processSummary(prompt, preFix, postFix) {
     try {
-      const summary = await geminiService.summarize(prompt);
+      const summary = await this.geminiService.summarize(prompt);
       
       if (summary[0] === 'Z') {
         Logger.log('対象記事ではないため、ポストをスキップ');
         return;
       }
-  
+
       const message = `${preFix}\n${summary}\n${postFix}`;
-      await slackService.sendMessage(message);
-    } catch (e) {
-      Logger.log(`要約処理中にエラーが発生しました: ${e.toString()}`);
-      await slackService.sendMessage(`エラー: ${e.toString()}`);
+      await this.slackService.sendMessage(message);
+    } catch (error) {
+      Logger.log(`要約処理中にエラー: ${error.toString()}`);
+      await this.slackService.sendMessage(`エラー: ${error.toString()}`);
     }
   }
 }
@@ -425,6 +471,14 @@ class ImportFeedUpdater {
            typeof formula === 'string' && 
            formula.toUpperCase().startsWith('=IMPORTFEED(');
   }
+}
+
+/**
+ * スプレッドシートの内容を要約する
+ */
+function summarizeSpreadsheetWithGemini() {
+  const summarizer = new SpreadsheetSummarizer();
+  return summarizer.summarize();
 }
 
 /**
