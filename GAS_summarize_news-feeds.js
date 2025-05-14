@@ -1,227 +1,260 @@
-/**
- * メイン処理: スプレッドシートのRSSフィードを取得し、Geminiで要約してSlackに投稿
- */
-function summarizeSpreadsheetWithGemini() {
-  // --- 設定 ---
-  const API_KEY_PROPERTY_NAME = 'GEMINI_API_KEY'; // APIキーを保存するプロパティ名
-  const SLACK_WEBHOOK_URL_PROPERTY_NAME = 'SLACK_WEBHOOK_URL'; // Slack Webhook URL
-  const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent'; // Gemini APIのエンドポイント
-  const PROMPT_INSTRUCTION = "# 依頼内容\n以下は製薬会社等の記事URLです。URL先の内容を確認し、日本のAI創薬スタートアップを想定ユーザーとして、有用な情報提供をしてください。\n\n## 手順\n1. 以下の対象に合致するかを判断してください\n2. 条件に合致した場合：日本語で200字以内で、余計な枕詞は追加せず、記事の内容だけから要約を生成し、要約した文章のみを出力してください。\n3. 条件に合致しなかった場合：「Z」とだけ出力してください\n4. 対象の記事がないなど、上記の処理ができない場合：「Z」とだけ出力してください\n\n## 対象記事（例）\n- 創薬研究開発に関わる内容\n- 創薬研究開発におけるパートナーシップ、共同研究契約、産学連携\n\n## 対象外記事（例）\n以下のような内容は対象外とし、出力に含めないでください。\n- 決算発表\n- 創薬の内容を含まない中期経営計画や会社経営方針\n- 株式分割、配当金などのIR情報\n- Corporate Social Responsibility 活動\n- 創薬に関係のない記事（一般薬、ジェネリック医薬品、医療機器食品 等）\n\n# URL\n\n"; // 要約のための指示文
-  const PROMPT_INSTRUCTION_EMAIL = "# 依頼内容\n以下は製薬会社等の記事です。内容を確認し、日本のAI創薬スタートアップを想定ユーザーとして、有用な情報提供をしてください。\n\n## 手順\n1. 以下の対象に合致するかを判断してください\n2. 条件に合致した場合：日本語で200字以内で、余計な枕詞は追加せず、記事の内容だけから要約を生成し、要約した文章のみを出力してください。\n3. 条件に合致しなかった場合：「Z」とだけ出力してください\n4. 対象の記事がないなど、上記の処理ができない場合：「Z」とだけ出力してください\n\n## 対象記事（例）\n- 創薬研究開発に関わる内容\n- 創薬研究開発におけるパートナーシップ、共同研究契約、産学連携\n\n## 対象外記事（例）\n以下のような内容は対象外とし、出力に含めないでください。\n- 決算発表\n- 創薬の内容を含まない中期経営計画や会社経営方針\n- 株式分割、配当金などのIR情報\n- Corporate Social Responsibility 活動\n- 創薬に関係のない記事（一般薬、ジェネリック医薬品、医療機器食品 等）\n\n# 記事\n\n"; // 要約のための指示文
-
-  // --- rss_list_sheet シートの内容取得 ---
-  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-  const rss_list_sheet = spreadsheet.getSheetByName("rss_list")
-  let prompt_instruction = PROMPT_INSTRUCTION;
-
-  Logger.log('スプレッドシートの内容を取得中...');
-
-  var lastRow = rss_list_sheet.getLastRow();
-  for (var i = 2; i <= lastRow; i++) {
-    const sheetName = rss_list_sheet.getRange(i, 2).getValue();
-    const items_title = rss_list_sheet.getRange(i, 3);
-    const items_summary = rss_list_sheet.getRange(i, 4);
-    const items_url = rss_list_sheet.getRange(i, 5);
-    const items_created = rss_list_sheet.getRange(i, 6);
-
-    // すでに処理済みか確認
-    const targetSheet = spreadsheet.getSheetByName(sheetName);
-    Logger.log(sheetName);
-    const lastRowInTargetSheet = targetSheet.getLastRow();
-    const lastURLInTargetSheet = targetSheet.getRange(lastRowInTargetSheet, 3);
-
-    if (items_url.getValue() == '#N/A' ) {
-      Logger.log('フェードが取得されていないのでスキップします。');
-      continue;
+// config.js
+const CONFIG = {
+  API: {
+    GEMINI: {
+      URL: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent',
+      TEMPERATURE: 0.5
     }
-    
-    if ( items_url.getValue() == lastURLInTargetSheet.getValue() ) {
-      Logger.log('処理済みのフィードのためスキップします。' + items_url.getValue());
-      continue;
-    };
+  },
+  PROPERTIES: {
+    GEMINI_API_KEY: 'GEMINI_API_KEY',
+    SLACK_WEBHOOK_URL: 'SLACK_WEBHOOK_URL'
+  },
+  SHEETS: {
+    RSS_LIST: 'rss_list',
+    EMAIL: 'Email'
+  },
+  PROMPTS: {
+    RSS: `# 依頼内容
+以下は製薬会社等の記事URLです。URL先の内容を確認し、日本のAI創薬スタートアップを想定ユーザーとして、有用な情報提供をしてください。
 
-    // 処理済みを記録するため、最終行にコピー
-    const sheetId = spreadsheet.getSheetByName(sheetName).getSheetId();
-    items_title.copyValuesToRange(sheetId, 1, 1, lastRowInTargetSheet + 1, lastRowInTargetSheet + 1);
-    items_summary.copyValuesToRange(sheetId, 2, 2, lastRowInTargetSheet + 1, lastRowInTargetSheet + 1);
-    items_url.copyValuesToRange(sheetId, 3, 3, lastRowInTargetSheet + 1, lastRowInTargetSheet + 1);
-    items_created.copyValuesToRange(sheetId, 4, 4, lastRowInTargetSheet + 1, lastRowInTargetSheet + 1);
+## 手順
+1. 以下の対象に合致するかを判断してください
+2. 条件に合致した場合：日本語で200字以内で、余計な枕詞は追加せず、記事の内容だけから要約を生成し、要約した文章のみを出力してください。
+3. 条件に合致しなかった場合：「Z」とだけ出力してください
+4. 対象の記事がないなど、上記の処理ができない場合：「Z」とだけ出力してください
 
-    // フィード要約
-    prompt = prompt_instruction + items_url.getValue();
+## 対象記事（例）
+- 創薬研究開発に関わる内容
+- 創薬研究開発におけるパートナーシップ、共同研究契約、産学連携
 
-    Logger.log('スプレッドシートの内容取得完了。Geminiに送信します。');
-    // Logger.log('送信内容のプレビュー（長すぎる場合は省略）: ' + allSheetsContent.substring(0, 1000) + '...'); // デバッグ用
+## 対象外記事（例）
+以下のような内容は対象外とし、出力に含めないでください。
+- 決算発表
+- 創薬の内容を含まない中期経営計画や会社経営方針
+- 株式分割、配当金などのIR情報
+- Corporate Social Responsibility 活動
+- 創薬に関係のない記事（一般薬、ジェネリック医薬品、医療機器食品 等）
 
-    const pre_fix = "*" + sheetName + ",* " + items_created.getValue();
-    const post_fix = items_url.getValue();
-    summarizeWithGemini(prompt, pre_fix, post_fix);
-  };
+# URL\n\n`,
+    EMAIL: `# 依頼内容
+以下は製薬会社等の記事です。内容を確認し、日本のAI創薬スタートアップを想定ユーザーとして、有用な情報提供をしてください。
 
-  summarizeEmailsWithGemini();
+## 手順
+1. 以下の対象に合致するかを判断してください
+2. 条件に合致した場合：日本語で200字以内で、余計な枕詞は追加せず、記事の内容だけから要約を生成し、要約した文章のみを出力してください。
+3. 条件に合致しなかった場合：「Z」とだけ出力してください
+4. 対象の記事がないなど、上記の処理ができない場合：「Z」とだけ出力してください
 
-  // メールによるフィードの処理と削除
-  function summarizeEmailsWithGemini() {
-    const EMAIL_SHEET_TO_CLEAR = 'Email'; // 削除したいシート名
-    const emailSheet = spreadsheet.getSheetByName(EMAIL_SHEET_TO_CLEAR);
+## 対象記事（例）
+- 創薬研究開発に関わる内容
+- 創薬研究開発におけるパートナーシップ、共同研究契約、産学連携
 
-    if (!emailSheet) {
-        Logger.log(`注意: シート "${EMAIL_SHEET_TO_CLEAR}" が見つかりませんでした。`);
-        return null;
-    };
+## 対象外記事（例）
+以下のような内容は対象外とし、出力に含めないでください。
+- 決算発表
+- 創薬の内容を含まない中期経営計画や会社経営方針
+- 株式分割、配当金などのIR情報
+- Corporate Social Responsibility 活動
+- 創薬に関係のない記事（一般薬、ジェネリック医薬品、医療機器食品 等）
 
-    Logger.log(`シート "${EMAIL_SHEET_TO_CLEAR}" の内容を処理します...`);
-    var lastRow = emailSheet.getLastRow();
-    for (var i = 1; i <= lastRow; i++) {
-      const items_title = emailSheet.getRange(i, 1);
-      const items_summary = emailSheet.getRange(i, 2);
-      const items_from = emailSheet.getRange(i, 3);
-      const items_created = emailSheet.getRange(i, 4);
+# 記事\n\n`
+  }
+};
 
-      // フィード要約
-      prompt = PROMPT_INSTRUCTION_EMAIL + items_title.getValue() + items_summary.getValue();
-
-      Logger.log('スプレッドシートの内容取得完了。Geminiに送信します。');
-      // Logger.log('送信内容のプレビュー（長すぎる場合は省略）: ' + allSheetsContent.substring(0, 1000) + '...'); // デバッグ用
-
-      const pre_fix = '*' + items_from.getValue() + ',* ' + items_created.getValue();
-      const post_fix = '';
-      summarizeWithGemini(prompt, pre_fix, post_fix);
-    };
-
-    Logger.log(`シート "${EMAIL_SHEET_TO_CLEAR}" の内容を全削除します...`);
-    emailSheet.clearContents();
-    Logger.log(`シート "${EMAIL_SHEET_TO_CLEAR}" の内容を削除しました。`);
-  };
-
-  function summarizeWithGemini(prompt, pre_fix, post_fix) {
-    // --- Gemini APIキーの取得 ---
-    const apiKey = PropertiesService.getScriptProperties().getProperty(API_KEY_PROPERTY_NAME);
-    if (!apiKey) {
-        Logger.log('エラー: APIキーが設定されていません。スクリプトプロパティに ' + API_KEY_PROPERTY_NAME + ' を設定してください。');
-        Browser.msgBox('エラー: APIキーが設定されていません。スクリプトプロパティに ' + API_KEY_PROPERTY_NAME + ' を設定してください。');
-        return;
+// services/gemini.js
+class GeminiService {
+  constructor() {
+    this.apiKey = PropertiesService.getScriptProperties().getProperty(CONFIG.PROPERTIES.GEMINI_API_KEY);
+    if (!this.apiKey) {
+      throw new Error(`APIキーが設定されていません。スクリプトプロパティに ${CONFIG.PROPERTIES.GEMINI_API_KEY} を設定してください。`);
     }
+  }
 
-    // --- Gemini API リクエストの作成 ---
+  async summarize(prompt) {
     const requestBody = {
-        contents: [
-          {
-            parts: [
-              {
-                text: prompt
-              }
-            ]
-          }
-        ],
-        // オプション（必要に応じて追加）：temperature, topK, topPなど
-        generationConfig: {
-         temperature: 0.5
-        }
-      };
-  
-      const options = {
-        method: 'post',
-        contentType: 'application/json',
-        payload: JSON.stringify(requestBody),
-        muteHttpExceptions: true // エラー時も例外を投げずに応答を取得
-      };
-  
-      const apiUrlWithKey = `${GEMINI_API_URL}?key=${apiKey}`;
-  
-      // --- Gemini API の呼び出し ---
-      try {
-        Logger.log('Gemini APIを呼び出し中...');
-        const response = UrlFetchApp.fetch(apiUrlWithKey, options);
-        const responseCode = response.getResponseCode();
-        const responseBody = response.getContentText();
-  
-        Logger.log(`Gemini API レスポンスコード: ${responseCode}`);
-        // Logger.log(`Gemini API レスポンスボディ: ${responseBody}`); // デバッグ時以外はコメントアウト推奨
-  
-        if (responseCode === 200) {
-          const jsonResponse = JSON.parse(responseBody);
-  
-          // レスポンスから要約テキストを抽出
-          // レスポンス構造はAPIのバージョンや応答内容によって変わる可能性あり
-          if (jsonResponse.candidates && jsonResponse.candidates.length > 0 &&
-              jsonResponse.candidates[0].content && jsonResponse.candidates[0].content.parts &&
-              jsonResponse.candidates[0].content.parts.length > 0 && jsonResponse.candidates[0].content.parts[0].text) {
-  
-            const summary = jsonResponse.candidates[0].content.parts[0].text; // 要約結果を取得
-            Logger.log('要約が成功しました:\n' + summary);
-  
-            if (summary[0] == 'Z') {
-              Logger.log('対象記事ではないため、ポストをスキップ');
-              return null;
-            };
-  
-            const postMessage = pre_fix + '\n' + summary + '\n' + post_fix;
-  
-            // Slack投稿処理
-            sendSlackMessage(postMessage);
-          } else {
-            Logger.log('エラー: Geminiからの応答に要約テキストが見つかりませんでした。');
-            Logger.log('応答ボディ: ' + responseBody);
-            // エラーをSlackに通知することも可能
-            sendSlackMessage('エラー: スプレッドシート要約中にGeminiからの応答に要約テキストが見つかりませんでした。ログを確認してください。');
-          }
-        } else {
-          // APIエラーハンドリング
-          Logger.log('エラー: Gemini APIの呼び出しに失敗しました。');
-          Logger.log('応答コード: ' + responseCode);
-          Logger.log('応答ボディ: ' + responseBody);
-          // エラーをSlackに通知
-          sendSlackMessage(`エラー: スプレッドシート要約中にGemini APIの呼び出しに失敗しました。ステータスコード: ${responseCode}。ログを確認してください。`);
-        }
-      } catch (e) {
-        Logger.log('API呼び出し中に例外が発生しました: ' + e.toString());
-        // 例外発生をSlackに通知
-        sendSlackMessage(`エラー: スプレッドシート要約中に例外が発生しました。${e.toString()}。ログを確認してください。`);
-      }  
-  };
-  
-  /**
-   * Slack Incoming Webhook を使ってメッセージを送信するヘルパー関数
-   * @param {string} message - 送信するテキストメッセージ
-   */
-  function sendSlackMessage(message) {
-    // --- Slack Webhook URLの取得 ---
-    const slackWebhookUrl = PropertiesService.getScriptProperties().getProperty(SLACK_WEBHOOK_URL_PROPERTY_NAME);
-    if (!slackWebhookUrl) {
-        Logger.log('エラー: Slack Webhook URLが設定されていません。スクリプトプロパティに ' + SLACK_WEBHOOK_URL_PROPERTY_NAME + ' を設定してください。');
-        Browser.msgBox('エラー: Slack Webhook URLが設定されていません...');
-        return;
-    }
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: CONFIG.API.GEMINI.TEMPERATURE }
+    };
 
     const options = {
       method: 'post',
       contentType: 'application/json',
-      payload: JSON.stringify({
-        text: message // Slackに送るメッセージ本文
-        // 他にも username, icon_emoji, attachments, blocks など設定可能
-        // 例: username: "スプレッドシート要約Bot"
-      }),
-      muteHttpExceptions: true // エラー時も例外を投げない
+      payload: JSON.stringify(requestBody),
+      muteHttpExceptions: true
+    };
+
+    const apiUrlWithKey = `${CONFIG.API.GEMINI.URL}?key=${this.apiKey}`;
+    
+    try {
+      const response = UrlFetchApp.fetch(apiUrlWithKey, options);
+      const responseCode = response.getResponseCode();
+      const responseBody = response.getContentText();
+
+      if (responseCode === 200) {
+        const jsonResponse = JSON.parse(responseBody);
+        return this._extractSummary(jsonResponse);
+      } else {
+        throw new Error(`API呼び出しに失敗しました。ステータスコード: ${responseCode}`);
+      }
+    } catch (e) {
+      throw new Error(`API呼び出し中に例外が発生しました: ${e.toString()}`);
+    }
+  }
+
+  _extractSummary(jsonResponse) {
+    if (jsonResponse.candidates?.[0]?.content?.parts?.[0]?.text) {
+      return jsonResponse.candidates[0].content.parts[0].text;
+    }
+    throw new Error('Geminiからの応答に要約テキストが見つかりませんでした。');
+  }
+}
+
+// services/slack.js
+class SlackService {
+  constructor() {
+    this.webhookUrl = PropertiesService.getScriptProperties().getProperty(CONFIG.PROPERTIES.SLACK_WEBHOOK_URL);
+    if (!this.webhookUrl) {
+      throw new Error(`Slack Webhook URLが設定されていません。スクリプトプロパティに ${CONFIG.PROPERTIES.SLACK_WEBHOOK_URL} を設定してください。`);
+    }
+  }
+
+  async sendMessage(message) {
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify({ text: message }),
+      muteHttpExceptions: true
     };
 
     try {
-      Logger.log('Slackにメッセージを投稿中...');
-      const response = UrlFetchApp.fetch(slackWebhookUrl, options);
+      const response = UrlFetchApp.fetch(this.webhookUrl, options);
       const responseCode = response.getResponseCode();
 
-      if (responseCode === 200) {
-        Logger.log('Slackへの投稿に成功しました。');
-      } else {
-        Logger.log('エラー: Slackへの投稿に失敗しました。');
-        Logger.log('応答コード: ' + responseCode);
-        Logger.log('応答ボディ: ' + response.getContentText());
+      if (responseCode !== 200) {
+        throw new Error(`Slackへの投稿に失敗しました。ステータスコード: ${responseCode}`);
       }
     } catch (e) {
-      Logger.log('エラー: Slackへの投稿中に例外が発生しました: ' + e.toString());
+      throw new Error(`Slackへの投稿中に例外が発生しました: ${e.toString()}`);
     }
-  };
-};
+  }
+}
+
+// services/spreadsheet.js
+class SpreadsheetService {
+  constructor() {
+    this.spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  }
+
+  getRssListSheet() {
+    return this.spreadsheet.getSheetByName(CONFIG.SHEETS.RSS_LIST);
+  }
+
+  getEmailSheet() {
+    return this.spreadsheet.getSheetByName(CONFIG.SHEETS.EMAIL);
+  }
+
+  copyRowToSheet(sourceRange, targetSheet, targetRow) {
+    const sheetId = targetSheet.getSheetId();
+    sourceRange.copyValuesToRange(sheetId, 1, 1, targetRow, targetRow);
+  }
+}
+
+// main.js
+function summarizeSpreadsheetWithGemini() {
+  const geminiService = new GeminiService();
+  const slackService = new SlackService();
+  const spreadsheetService = new SpreadsheetService();
+
+  try {
+    // RSSフィードの処理
+    processRssFeeds(geminiService, slackService, spreadsheetService);
+    
+    // メールの処理
+    processEmails(geminiService, slackService, spreadsheetService);
+  } catch (e) {
+    Logger.log(`エラーが発生しました: ${e.toString()}`);
+  }
+
+  function processRssFeeds(geminiService, slackService, spreadsheetService) {
+    const rssListSheet = spreadsheetService.getRssListSheet();
+    const lastRow = rssListSheet.getLastRow();
+  
+    for (let i = 2; i <= lastRow; i++) {
+      const row = rssListSheet.getRange(i, 2, 1, 5);
+      let [sheetName, title, summary, url, created] = row.getValues()[0];
+  
+      const rowToCopy = rssListSheet.getRange(i, 3, 1, 4);
+  
+      if (url === '#N/A') {
+        Logger.log('フィードが取得されていないのでスキップします。');
+        continue;
+      }
+  
+      const targetSheet = spreadsheetService.spreadsheet.getSheetByName(sheetName);
+      const lastUrlInTargetSheet = targetSheet.getRange(targetSheet.getLastRow(), 3).getValue();
+  
+      if (url === lastUrlInTargetSheet) {
+        Logger.log('処理済みのフィードのためスキップします。' + url);
+        continue;
+      }
+  
+      if (sheetName == 'ミクスOnline') {
+        url = 'https://www.mixonline.jp' + url;
+      }
+  
+      // 新しい行を追加
+      const newRow = targetSheet.getLastRow() + 1;
+      spreadsheetService.copyRowToSheet(rowToCopy, targetSheet, newRow);
+  
+      // 要約処理
+      const prompt = CONFIG.PROMPTS.RSS + url;
+      const preFix = `*${sheetName},* ${created}`;
+      const postFix = url;
+  
+      processSummary(geminiService, slackService, prompt, preFix, postFix);
+    }
+  }
+  
+  function processEmails(geminiService, slackService, spreadsheetService) {
+    const emailSheet = spreadsheetService.getEmailSheet();
+    if (!emailSheet) {
+      Logger.log(`注意: シート "${CONFIG.SHEETS.EMAIL}" が見つかりませんでした。`);
+      return;
+    }
+  
+    const lastRow = emailSheet.getLastRow();
+    for (let i = 1; i <= lastRow; i++) {
+      const [title, summary, from, created] = emailSheet.getRange(i, 1, 1, 4).getValues()[0];
+      
+      const prompt = CONFIG.PROMPTS.EMAIL + title + summary;
+      const preFix = `*${from},* ${created}`;
+      const postFix = '';
+  
+      processSummary(geminiService, slackService, prompt, preFix, postFix);
+    }
+  
+    // メールシートをクリア
+    emailSheet.clearContents();
+  }
+  
+  async function processSummary(geminiService, slackService, prompt, preFix, postFix) {
+    try {
+      const summary = await geminiService.summarize(prompt);
+      
+      if (summary[0] === 'Z') {
+        Logger.log('対象記事ではないため、ポストをスキップ');
+        return;
+      }
+  
+      const message = `${preFix}\n${summary}\n${postFix}`;
+      await slackService.sendMessage(message);
+    } catch (e) {
+      Logger.log(`要約処理中にエラーが発生しました: ${e.toString()}`);
+      await slackService.sendMessage(`エラー: ${e.toString()}`);
+    }
+  }
+}
 
 /**
  * 特定の条件に一致するニュースレターメールをGmailから取得し、
