@@ -14,6 +14,10 @@ const CONFIG = {
     RSS_LIST: 'rss_list',
     EMAIL: 'Email'
   },
+  EMAIL: {
+    SEARCH_QUERY: 'is:unread label:"Newsfeed"',
+    MAX_PROCESS_COUNT: 10
+  },
   PROMPTS: {
     RSS: `# 依頼内容
 以下は製薬会社等の記事URLです。URL先の内容を確認し、日本のAI創薬スタートアップを想定ユーザーとして、有用な情報提供をしてください。
@@ -257,206 +261,184 @@ function summarizeSpreadsheetWithGemini() {
 }
 
 /**
- * 特定の条件に一致するニュースレターメールをGmailから取得し、
- * スプレッドシートの指定シートに追記する。
+ * ニュースレターメールを処理するクラス
  */
-function processNewslettersFromEmails() {
-  // --- 設定 ---
-  const SHEET_NAME = 'Email'; // 追記したいシートの名前
+class EmailProcessor {
+  constructor() {
+    this.spreadsheetService = new SpreadsheetService();
+  }
 
-  // Gmail検索クエリ: 取得したいメールを特定するクエリをここに記述 ★要変更★
-  // 例: from:"newsletter@example.com" subject:"週刊 ニュース" is:unread
-  // 例: label:"Newsletters/Important" is:unread
-  const GMAIL_SEARCH_QUERY = 'is:unread label:"Newsfeed"'; // ★★★ここに適切な検索クエリを設定★★★
-  const MAX_EMAILS_TO_PROCESS = 10; // 一度に処理するメールの最大数（多すぎると時間切れの可能性）
+  /**
+   * ニュースレターメールを処理する
+   */
+  async processNewsletters() {
+    Logger.log('ニュースレターの処理を開始します...');
 
-  Logger.log('ニュースレターの処理を開始します...');
-
-  try {
-    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-    const sheet = spreadsheet.getSheetByName(SHEET_NAME);
-
-    if (!sheet) {
-      Logger.log(`エラー: シート "${SHEET_NAME}" が見つかりませんでした。シート名を確認してください。`);
-      return;
-    }
-
-    // Gmailでメールを検索
-    // is:unread を含めると未読メールのみが対象になります
-    const threads = GmailApp.search(GMAIL_SEARCH_QUERY, 0, MAX_EMAILS_TO_PROCESS);
-
-    if (threads.length === 0) {
-      Logger.log('処理対象の未読メールは見つかりませんでした。');
-      return;
-    }
-
-    Logger.log(`${threads.length} 件のスレッドが見つかりました。`);
-
-    threads.forEach(thread => {
-      // スレッド内の最新メッセージを取得（ニュースレターは通常これ）
-      // または、thread.getMessages() ですべてのメッセージを取得
-      const message = thread.getMessages().pop(); // 最新メッセージを取得
-
-      // （もし検索クエリに is:unread を含めていない場合のみ）未読かどうかを確認
-      // if (!message.isUnread()) {
-      //   return; // 未読でない場合はスキップ
-      // }
-
-      try {
-        const date = message.getDate();
-        const subject = message.getSubject();
-        const from = message.getFrom();
-        const bodyHtml = message.getBody(); // HTML形式の本文
-        const bodyPlain = message.getPlainBody(); // プレーンテキスト形式の本文
-
-        Logger.log(`処理中: 件名 - "${subject}" (From: ${from}, Date: ${date})`);
-
-        // ★★★ここからニュース本文の抽出ロジック★★★
-        // 受け取るニュースレターの形式に合わせて、bodyHtml または bodyPlain から
-        // 必要なニュース部分のテキストを抽出するコードを記述してください。
-        // これは最もカスタマイズが必要な部分です。
-
-        let extractedNewsContent = ""; // 抽出したニュース本文を格納する変数
-
-        // 例1: プレーンテキスト本文をそのまま使う場合
-        // extractedNewsContent = bodyPlain;
-
-        // 例2: HTML本文から特定の要素（例: <div class="news-article">...</div>）の内容を抽出する場合
-        // GASのXmlServiceを使ってHTMLをパースするのは少し複雑です。
-        // 簡単な方法として、特定の開始マーカーと終了マーカー間のテキストを取得する方法があります（ただし正確性は低いです）。
-        /*
-        const startMarker = ""; // ニュース本文の開始を示すHTMLコメントなど
-        const endMarker = "";   // ニュース本文の終了を示すHTMLコメントなど
-        const startIndex = bodyHtml.indexOf(startMarker);
-        const endIndex = bodyHtml.indexOf(endMarker);
-
-        if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
-           extractedNewsContent = bodyHtml.substring(startIndex + startMarker.length, endIndex);
-           // HTMLタグを取り除くなどの後処理が必要な場合が多い
-           extractedNewsContent = extractedNewsContent.replace(/<[^>]*>/g, '').trim(); // 簡単なタグ除去
-        } else {
-           Logger.log('注意: 開始/終了マーカーが見つからなかったため、本文全体または一部を使用します。');
-           extractedNewsContent = bodyPlain; // マーカーがない場合はプレーンテキスト全体を使うなど
-        }
-        */
-
-        // 例3: プレーンテキスト本文から特定のキーワード間を抽出する場合
-        /*
-        const plainTextLines = bodyPlain.split('\n');
-        let isExtracting = false;
-        const extractedLines = [];
-        for (const line of plainTextLines) {
-            if (line.includes('--- ニュース本文開始 ---')) { // 開始キーワード
-                isExtracting = true;
-                continue; // 開始行自体は含めない場合
-            }
-            if (line.includes('--- ニュース本文終了 ---')) { // 終了キーワード
-                isExtracting = false;
-                break; // 終了行以降は処理しない
-            }
-            if (isExtracting) {
-                extractedLines.push(line);
-            }
-        }
-        extractedNewsContent = extractedLines.join('\n').trim();
-        */
-
-        // 上記の例を参考に、あなたのニュースレターの形式に合った抽出ロジックを記述してください。
-        // ここでは例として、一旦プレーンテキスト本文をそのまま抽出結果とします。
-        extractedNewsContent = bodyPlain; // ★★★ここをカスタマイズ★★★
-        // ★★★抽出ロジックここまで★★★
-
-        // スプレッドシートに追記するデータの配列
-        const rowData = [
-          subject,
-          extractedNewsContent,
-          from,
-          date,
-        ];
-
-        // シートの最終行にデータを追記
-        sheet.appendRow(rowData);
-        Logger.log('スプレッドシートに行を追加しました。');
-
-        // 処理済みとしてマーク
-        message.markRead(); // メッセージを既読にする
-      } catch (e) {
-        Logger.log(`エラー: スレッド "${thread.getSubject()}" の処理中に例外が発生しました: ${e.toString()}`);
-        // エラーが発生したメールを既読にせず残す、特定のエラーラベルを付けるなどの考慮も可能
+    try {
+      const sheet = this.spreadsheetService.getEmailSheet();
+      if (!sheet) {
+        throw new Error(`シート "${CONFIG.SHEETS.EMAIL}" が見つかりませんでした。`);
       }
-    });
 
-     Logger.log('ニュースレターの処理が完了しました。');
+      const threads = this._searchEmailThreads();
+      if (threads.length === 0) {
+        Logger.log('処理対象の未読メールは見つかりませんでした。');
+        return;
+      }
 
-  } catch (mainError) {
-    Logger.log(`致命的なエラーが発生しました: ${mainError.toString()}`);
+      Logger.log(`${threads.length} 件のスレッドが見つかりました。`);
+      await this._processThreads(threads, sheet);
+
+      Logger.log('ニュースレターの処理が完了しました。');
+    } catch (error) {
+      Logger.log(`エラー: ${error.toString()}`);
+      throw error;
+    }
+  }
+
+  /**
+   * メールスレッドを検索する
+   * @returns {GmailThread[]} 検索結果のスレッド配列
+   */
+  _searchEmailThreads() {
+    return GmailApp.search(
+      CONFIG.EMAIL.SEARCH_QUERY,
+      0,
+      CONFIG.EMAIL.MAX_PROCESS_COUNT
+    );
+  }
+
+  /**
+   * スレッドを処理する
+   * @param {GmailThread[]} threads 処理対象のスレッド配列
+   * @param {Sheet} sheet 出力先シート
+   */
+  async _processThreads(threads, sheet) {
+    for (const thread of threads) {
+      try {
+        const message = thread.getMessages().pop();
+        const emailData = this._extractEmailData(message);
+        
+        if (emailData) {
+          sheet.appendRow([
+            emailData.subject,
+            emailData.content,
+            emailData.from,
+            emailData.date
+          ]);
+          message.markRead();
+          Logger.log(`メールを処理しました: ${emailData.subject}`);
+        }
+      } catch (error) {
+        Logger.log(`スレッド "${thread.getSubject()}" の処理中にエラー: ${error.toString()}`);
+      }
+    }
+  }
+
+  /**
+   * メールからデータを抽出する
+   * @param {GmailMessage} message メールメッセージ
+   * @returns {Object|null} 抽出したメールデータ
+   */
+  _extractEmailData(message) {
+    try {
+      return {
+        date: message.getDate(),
+        subject: message.getSubject(),
+        from: message.getFrom(),
+        content: message.getPlainBody()
+      };
+    } catch (error) {
+      Logger.log(`メールデータの抽出中にエラー: ${error.toString()}`);
+      return null;
+    }
   }
 }
 
 /**
- * スプレッドシート上のすべてのシートに対し、A1セルにあると仮定した
- * IMPORTFEED関数を強制的に再計算させます。
- * 時間トリガーで使用することを想定しています。
+ * IMPORTFEED数式を更新するクラス
  */
-function refreshImportFeedFormulas() {
-  // --- 設定 ---
-  // このスクリプトが対象とするスプレッドシートのID。
-  const SPREADSHEET_ID_FOR_REFRESH = SpreadsheetApp.getActiveSpreadsheet().getId();
+class ImportFeedUpdater {
+  constructor() {
+    this.spreadsheetService = new SpreadsheetService();
+  }
 
-  Logger.log(`全シートのA1セルのIMPORTFEED数式の更新を開始します (スプレッドシートID: ${SPREADSHEET_ID_FOR_REFRESH})...`);
+  /**
+   * すべてのシートのIMPORTFEED数式を更新する
+   */
+  async refreshAllSheets() {
+    Logger.log('IMPORTFEED数式の更新を開始します...');
 
-  try {
-    const spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID_FOR_REFRESH);
-    const sheets = spreadsheet.getSheets(); // スプレッドシート内のすべてのシートを取得
-
-    let totalRefreshCount = 0; // 全シート合計の更新数
-
-    if (sheets.length === 0) {
-      Logger.log('スプレッドシートにシートが見つかりませんでした。');
-      return;
-    }
-
-    Logger.log(`${sheets.length} 個のシートが見つかりました。各シートのA1セルを確認します。`);
-
-    // 各シートをループ処理
-    sheets.forEach(sheet => {
-      const sheetName = sheet.getName();
-      Logger.log(`シート "${sheetName}" のA1セルを確認中...`);
-
-      try {
-        // A1セルを取得
-        const cellA1 = sheet.getRange('A1');
-
-        // A1セルの数式を取得
-        const formulaA1 = cellA1.getFormula();
-
-        // 数式があり、かつ IMPORTFEED 関数で始まるかチェック (大文字小文字を区別しない)
-        if (formulaA1 && typeof formulaA1 === 'string' && formulaA1.toUpperCase().startsWith('=IMPORTFEED(')) {
-
-          // IMPORTFEED関数がA1セルに見つかった場合
-          Logger.log(`シート "${sheetName}" のA1セルにIMPORTFEED数式が見つかりました: ${formulaA1}`);
-
-          // 同じ数式をA1セルに設定し直すことで、再計算を強制する
-          cellA1.setFormula(formulaA1);
-          totalRefreshCount++;
-          Logger.log(`シート "${sheetName}" のA1セルの数式を再設定し、更新を試みました。`);
-
-        } else {
-          // A1セルに期待するIMPORTFEED関数がない場合
-          Logger.log(`シート "${sheetName}" のA1セルはIMPORTFEED数式ではありません (${formulaA1 || '数式なし'})。このシートはスキップします。`);
-        }
-      } catch (sheetError) {
-         // 特定のシートの処理中にエラーが発生した場合
-         Logger.log(`エラー: シート "${sheetName}" の処理中に例外が発生しました: ${sheetError.toString()}`);
-         // このシートはスキップし、次のシートの処理に進みます。
+    try {
+      const sheets = this.spreadsheetService.spreadsheet.getSheets();
+      if (sheets.length === 0) {
+        throw new Error('スプレッドシートにシートが見つかりませんでした。');
       }
 
-      Logger.log(`シート "${sheetName}" の確認を完了しました。`);
-    }); // sheets.forEach ループ終了
+      let totalRefreshCount = 0;
+      for (const sheet of sheets) {
+        const refreshCount = await this._refreshSheet(sheet);
+        totalRefreshCount += refreshCount;
+      }
 
-    Logger.log(`全シートのIMPORTFEED数式の更新処理が完了しました。合計 ${totalRefreshCount} 個の数式を再設定しました。`);
-
-  } catch (mainError) {
-    Logger.log(`IMPORTFEED数式更新中に致命的なエラーが発生しました: ${mainError.toString()}`);
+      Logger.log(`更新完了: ${totalRefreshCount} 個の数式を更新しました。`);
+    } catch (error) {
+      Logger.log(`エラー: ${error.toString()}`);
+      throw error;
+    }
   }
+
+  /**
+   * 個別のシートのIMPORTFEED数式を更新する
+   * @param {Sheet} sheet 更新対象のシート
+   * @returns {number} 更新した数式の数
+   */
+  async _refreshSheet(sheet) {
+    const sheetName = sheet.getName();
+    Logger.log(`シート "${sheetName}" の更新を開始...`);
+
+    try {
+      const cellA1 = sheet.getRange('A1');
+      const formula = cellA1.getFormula();
+
+      if (this._isImportFeedFormula(formula)) {
+        cellA1.setFormula(formula);
+        Logger.log(`シート "${sheetName}" の数式を更新しました。`);
+        return 1;
+      }
+
+      Logger.log(`シート "${sheetName}" はIMPORTFEED数式ではありません。`);
+      return 0;
+    } catch (error) {
+      Logger.log(`シート "${sheetName}" の更新中にエラー: ${error.toString()}`);
+      return 0;
+    }
+  }
+
+  /**
+   * 数式がIMPORTFEED関数かどうかを判定する
+   * @param {string} formula 数式
+   * @returns {boolean} IMPORTFEED関数の場合はtrue
+   */
+  _isImportFeedFormula(formula) {
+    return formula && 
+           typeof formula === 'string' && 
+           formula.toUpperCase().startsWith('=IMPORTFEED(');
+  }
+}
+
+/**
+ * ニュースレターメールを処理する
+ */
+function processNewslettersFromEmails() {
+  const processor = new EmailProcessor();
+  return processor.processNewsletters();
+}
+
+/**
+ * IMPORTFEED数式を更新する
+ */
+function refreshImportFeedFormulas() {
+  const updater = new ImportFeedUpdater();
+  return updater.refreshAllSheets();
 }
