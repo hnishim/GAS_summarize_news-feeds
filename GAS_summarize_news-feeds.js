@@ -317,7 +317,7 @@ class SpreadsheetSummarizer {
         // エラー値のチェックと置換
         const processedTitle = this._replaceErrorValue(title);
         const processedSummary = this._replaceErrorValue(summary);
-        const processedUrl = this._processUrl(sheetName, this._replaceErrorValue(url));
+        const processedUrl = this._replaceErrorValue(this._processUrl(sheetName, url));
         const processedDate = this._parseDate(created);
 
         // title, summary, url のすべてがnullの場合はスキップ
@@ -348,7 +348,7 @@ class SpreadsheetSummarizer {
    * @returns {string} 処理後のURL
    */
   _processUrl(sheetName, url) {
-    if (sheetName === 'ミクスOnline') {
+    if (sheetName === 'ミクスOnline' && url[0] == '/') {
       return 'https://www.mixonline.jp' + url;
     }
     return url;
@@ -419,7 +419,9 @@ class SpreadsheetSummarizer {
     try {
       const summary = await this.geminiService.summarize(prompt);
       
-      if (summary[0] === 'Z') {
+      // レスポンスの最初または末尾にZが含まれているかチェック
+      const trimmedSummary = summary.trim();
+      if (trimmedSummary === 'Z' || trimmedSummary.startsWith('Z\n') || trimmedSummary.endsWith('\nZ')) {
         Logger.log('対象記事ではないため、ポストをスキップ');
         return;
       }
