@@ -329,7 +329,7 @@ class SpreadsheetSummarizer {
         const targetSheet = this.spreadsheetService.spreadsheet.getSheetByName(sheetName);
         const lastUrlInTargetSheet = targetSheet.getRange(targetSheet.getLastRow(), 3).getValue();
 
-        if (processedUrl === lastUrlInTargetSheet) {
+        if (url === lastUrlInTargetSheet) {
           Logger.log('処理済みのフィードのためスキップします。' + processedUrl);
           continue;
         }
