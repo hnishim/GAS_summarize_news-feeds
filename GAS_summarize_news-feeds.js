@@ -100,7 +100,21 @@ class GeminiService {
 
         if (responseCode === 200) {
           const jsonResponse = JSON.parse(responseBody);
-          return this._extractSummary(jsonResponse);
+          const summary = this._extractSummary(jsonResponse);
+          
+          // 300文字以上の場合はリトライ
+          if (summary.length >= 300) {
+            if (attempt < this.maxRetries) {
+              Logger.log(`要約が300文字以上（${summary.length}文字）のため、リトライします（${attempt}/${this.maxRetries}）`);
+              await Utilities.sleep(this.retryDelay);
+              continue;
+            } else {
+              Logger.log(`要約が300文字以上（${summary.length}文字）のため、スキップします`);
+              return 'Z'; // スキップを示す値を返す
+            }
+          }
+          
+          return summary;
         } else {
           throw new Error(`API呼び出しに失敗しました。ステータスコード: ${responseCode}`);
         }
@@ -425,9 +439,6 @@ class SpreadsheetSummarizer {
   async _processSummary(prompt, preFix, postFix) {
     try {
       const summary = await this.geminiService.summarize(prompt);
-      if (summary.length >= 300) {
-        throw new Error('要約が300文字以上');
-      }
       
       // レスポンスの最初または末尾にZが含まれているかチェック
       const trimmedSummary = summary.trim();
