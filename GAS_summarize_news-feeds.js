@@ -2,9 +2,8 @@
 const CONFIG = {
   API: {
     GEMINI: {
-      URL: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent',
-      TEMPERATURE: 1.0,          // Gemini 3は既定1.0推奨。低温は不安定化の恐れ
-      THINKING_LEVEL: 'LOW',     // 分類＋短要約なので浅い思考で十分（minimalも可）
+      URL: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent',
+      THINKING_LEVEL: 'MINIMAL', // 分類＋短要約なので最小限の思考で十分
       MAX_OUTPUT_TOKENS: 2048    // 思考+出力を賄う上限。MAX_TOKENS切れによる空応答を防ぐ
     }
   },
@@ -92,7 +91,6 @@ class GeminiService {
         const requestBody = {
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
-            temperature: CONFIG.API.GEMINI.TEMPERATURE,
             maxOutputTokens: CONFIG.API.GEMINI.MAX_OUTPUT_TOKENS,
             thinkingConfig: { thinkingLevel: CONFIG.API.GEMINI.THINKING_LEVEL }
           }
