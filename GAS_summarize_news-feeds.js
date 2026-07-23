@@ -2,8 +2,10 @@
 const CONFIG = {
   API: {
     GEMINI: {
-      URL: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent',
-      TEMPERATURE: 0.5
+      URL: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent',
+      TEMPERATURE: 1.0,          // Gemini 3は既定1.0推奨。低温は不安定化の恐れ
+      THINKING_LEVEL: 'LOW',     // 分類＋短要約なので浅い思考で十分（minimalも可）
+      MAX_OUTPUT_TOKENS: 2048    // 思考+出力を賄う上限。MAX_TOKENS切れによる空応答を防ぐ
     }
   },
   PROPERTIES: {
@@ -28,13 +30,13 @@ const CONFIG = {
     - 偽陰性（False negative）よりも偽陽性（False Positive）を避けてください
     - 具体的には、完全対象記事を1.0, 完全対象外記事を0.0とした場合、閾値は0.8に設定し、0.8未満の記事は対象外と判定してください
 2. 判定結果をもとに、以下のように対応してください
-  - 条件に合致した場合：要約した文章のみを出力してください
+  - 条件に合致した場合: 要約した文章のみを出力してください
     - 日本語で200字以内で、余計な枕詞は追加せず、記事の内容だけから要約を生成してください
     - あなたからの出力内容が直接Slackを経由して複数のメンバーに共有されます、余計な文言を追加することは絶対にしないでください
-  - 条件に合致しなかった場合：「Z」とだけ出力してください
+  - 条件に合致しなかった場合: 「Z」とだけ出力してください
     - 「Z」の前後に何か余計な文字があった場合、あなたからの出力内容が直接Slackを経由して複数のメンバーに共有されてしまいますので、かならず「Z」の1文字だけを出力してください
-  - 対象の記事がないなど、条件判定ができなかった場合：「Z」とだけ出力してください
-    - 「 Z」の前後に何か余計な文字があった場合、あなたからの出力内容が直接Slackを経由して複数のメンバーに共有されてしまいますので、かならず「Z」の1文字だけを出力してください
+  - 対象の記事がないなど、条件判定ができなかった場合: 「Z」とだけ出力してください
+    - 「Z」の前後に何か余計な文字があった場合、あなたからの出力内容が直接Slackを経由して複数のメンバーに共有されてしまいますので、かならず「Z」の1文字だけを出力してください
 3. 出力予定の文章全体をもう一度、本手順に厳格にしたがっているか確認してください
   - たとえば、出力予定の文章が300文字以上ある場合は明らかに手順に沿っていませんので、もう一度1.から手順に沿って再処理してください
 4. 問題がなければそのまま出力し、処理を完了してください
@@ -89,8 +91,11 @@ class GeminiService {
       try {
         const requestBody = {
           contents: [{ parts: [{ text: prompt }] }],
-          tools: [{googleSearch: {}}],
-          generationConfig: { temperature: CONFIG.API.GEMINI.TEMPERATURE }
+          generationConfig: {
+            temperature: CONFIG.API.GEMINI.TEMPERATURE,
+            maxOutputTokens: CONFIG.API.GEMINI.MAX_OUTPUT_TOKENS,
+            thinkingConfig: { thinkingLevel: CONFIG.API.GEMINI.THINKING_LEVEL }
+          }
         };
 
         const options = {
@@ -124,7 +129,8 @@ class GeminiService {
           
           return summary;
         } else {
-          throw new Error(`API呼び出しに失敗しました。ステータスコード: ${responseCode}`);
+          Logger.log(`APIエラー ${responseCode}: ${responseBody}`);   // ← 429の詳細metricを確認
+          throw new Error(`API呼び出しに失敗しました。ステータスコード: ${responseCode} / ${responseBody}`);
         }
       } catch (e) {
         lastError = e;
@@ -137,14 +143,20 @@ class GeminiService {
     }
 
     // すべてのリトライが失敗した場合
+    Logger.log(`API呼び出し中に例外が発生しました（${this.maxRetries}回試行）: ${lastError.toString()}`);
     throw new Error(`API呼び出し中に例外が発生しました（${this.maxRetries}回試行）: ${lastError.toString()}`);
   }
 
   _extractSummary(jsonResponse) {
-    if (jsonResponse.candidates?.[0]?.content?.parts?.[0]?.text) {
-      return jsonResponse.candidates[0].content.parts[0].text;
-    }
-    throw new Error('Geminiからの応答に要約テキストが見つかりませんでした。');
+    const candidate = jsonResponse.candidates?.[0];
+    const parts = candidate?.content?.parts ?? [];
+    // thought以外の最初のtextパートを採用
+    const textPart = parts.find(p => p.text && !p.thought);
+    if (textPart?.text) return textPart.text;
+    
+    // 本文が空 = 思考で出力枠を使い切った等
+    const reason = candidate?.finishReason ?? 'unknown';
+    throw new Error(`応答に要約テキストがありません（finishReason: ${reason}）`);
   }
 }
 
@@ -655,4 +667,27 @@ async function summarizeSpreadsheetWithGemini() {
     Logger.log(`スプレッドシートの要約処理中にエラーが発生しました: ${error.toString()}`);
     throw error; // エラーを再スローして、GASの実行ログに記録されるようにする
   }
+}
+
+function listAvailableModels() {
+  const apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+  const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`;
+  
+  const response = UrlFetchApp.fetch(url);
+  const data = JSON.parse(response.getContentText());
+  
+  console.log("=== 利用可能なモデル一覧 ===");
+  data.models.forEach(model => {
+    // generateContentメソッドをサポートしているモデルのみ表示
+    if (model.supportedGenerationMethods.includes("generateContent")) {
+      // モデル名（models/gemini-1.5-flash 等）からID部分だけ抽出してURLを生成
+      const modelId = model.name.replace('models/', '');
+      const fullUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent`;
+      
+      console.log(`モデル名: ${model.displayName}`);
+      console.log(`ID: ${modelId}`);
+      console.log(`設定すべきURL: ${fullUrl}`);
+      console.log("--------------------------------");
+    }
+  });
 }
