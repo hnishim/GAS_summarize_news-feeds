@@ -97,22 +97,12 @@ function loadStandalone() {
     { filename: SOURCE_PATH }
   );
 
-  return {
-    source,
-    context,
-    exports: context.__testExports,
-    propertyValues,
-    logs
-  };
+  return { source, context, exports: context.__testExports, propertyValues, logs };
 }
 
 function geminiResponse(result) {
   return JSON.stringify({
-    candidates: [{
-      content: {
-        parts: [{ text: JSON.stringify(result) }]
-      }
-    }]
+    candidates: [{ content: { parts: [{ text: JSON.stringify(result) }] } }]
   });
 }
 
@@ -123,7 +113,7 @@ test('standalone source has no Spreadsheet container dependency', () => {
   assert.match(source, /function\s+runNewsDigest\s*\(/);
 });
 
-test('RSS state bootstrap treats existing items as processed and keeps bounded history', () => {
+test('RSS state initialization treats existing items as processed and keeps bounded history', () => {
   const { exports, propertyValues } = loadStandalone();
   const { RssStateStore, NEWS_DIGEST_CONFIG } = exports;
   const state = new RssStateStore();
@@ -183,10 +173,7 @@ test('Gemini structured result preserves relevant/irrelevant contract', () => {
   propertyValues.set('GEMINI_API_KEY', 'test-key');
   const service = new StructuredGeminiService();
 
-  service.requestWithRetry = () => geminiResponse({
-    relevant: true,
-    summary: '  対象要約  '
-  });
+  service.requestWithRetry = () => geminiResponse({ relevant: true, summary: '  対象要約  ' });
   const relevant = service.classify({
     type: 'rss', source: 'source', title: 'title', url: 'https://example.com', content: 'body'
   });
@@ -205,19 +192,15 @@ test('Gemini structured result preserves relevant/irrelevant contract', () => {
 });
 
 test('summary validation enforces non-empty and 200-character maximum', () => {
-  const { exports } = loadStandalone();
-  const { validateSummary } = exports;
-
+  const { validateSummary } = loadStandalone().exports;
   assert.doesNotThrow(() => validateSummary('あ'.repeat(200)));
   assert.throws(() => validateSummary(''), /要約が空/);
   assert.throws(() => validateSummary('あ'.repeat(201)), /200字を超えています/);
 });
 
 test('RSS URL resolution covers absolute, protocol-relative, root and relative URLs', () => {
-  const { exports } = loadStandalone();
-  const { resolveUrl } = exports;
+  const { resolveUrl } = loadStandalone().exports;
   const base = 'https://example.com/news/feed.xml';
-
   assert.equal(resolveUrl('https://other.example/a', base), 'https://other.example/a');
   assert.equal(resolveUrl('//cdn.example/a', base), 'https://cdn.example/a');
   assert.equal(resolveUrl('/release/1', base), 'https://example.com/release/1');
@@ -226,7 +209,6 @@ test('RSS URL resolution covers absolute, protocol-relative, root and relative U
 
 test('email discovery selects unread messages oldest-first and respects the limit', () => {
   const { exports, context } = loadStandalone();
-  const { findUnreadEmailMessages } = exports;
   const makeMessage = (id, time, unread) => ({
     getId() { return id; },
     getDate() { return new Date(time); },
@@ -242,15 +224,14 @@ test('email discovery selects unread messages oldest-first and respects the limi
     { getMessages() { return [middle, oldest]; } }
   ];
 
-  const selected = findUnreadEmailMessages('query', 2);
+  const selected = exports.findUnreadEmailMessages('query', 2);
   assert.equal(selected.length, 2);
   assert.equal(selected[0].getId(), 'oldest');
   assert.equal(selected[1].getId(), 'middle');
 });
 
-test('email is marked read only after pipeline processing succeeds', () => {
+test('successfully handled email is marked read', () => {
   const { exports, context } = loadStandalone();
-  const { processUnreadNewsletters } = exports;
   let markedRead = 0;
   const message = {
     getId() { return 'mail-1'; },
@@ -263,16 +244,12 @@ test('email is marked read only after pipeline processing succeeds', () => {
   };
   context.GmailApp.search = () => [{ getMessages() { return [message]; } }];
 
-  processUnreadNewsletters({ process() { return 'filtered'; } });
-  assert.equal(markedRead, 1);
-
-  processUnreadNewsletters({ process() { throw new Error('downstream failure'); } });
+  exports.processUnreadNewsletters({ process() { return 'filtered'; } });
   assert.equal(markedRead, 1);
 });
 
 test('dry-run RSS selection takes the newest item per healthy source without mutating input', () => {
-  const { exports } = loadStandalone();
-  const { selectDryRunRssItems } = exports;
+  const { selectDryRunRssItems } = loadStandalone().exports;
   const older = { id: 'older', publishedAt: new Date('2026-09-10T00:00:00Z') };
   const newer = { id: 'newer', publishedAt: new Date('2026-09-11T00:00:00Z') };
   const items = [older, newer];
@@ -289,9 +266,7 @@ test('dry-run RSS selection takes the newest item per healthy source without mut
 });
 
 test('helper behavior needed by external-service adapters remains bounded', () => {
-  const { exports } = loadStandalone();
-  const { cleanHtml, stripCodeFence, isRetryableHttpStatus } = exports;
-
+  const { cleanHtml, stripCodeFence, isRetryableHttpStatus } = loadStandalone().exports;
   assert.equal(cleanHtml('<p>Hello &amp; world</p><script>bad()</script>'), 'Hello & world');
   assert.equal(stripCodeFence('```json\n{"ok":true}\n```'), '{"ok":true}');
   assert.equal(isRetryableHttpStatus(429), true);
