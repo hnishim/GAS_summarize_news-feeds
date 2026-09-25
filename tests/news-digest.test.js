@@ -337,7 +337,7 @@ test('RSS batch failure falls back to individual sources; one failure does not h
   });
   const results = exports.fetchAllRssFeeds();
   assert.equal(results.length, 2);
-  assert.deepEqual(fetched, sources.map(source => source.feedUrl));
+  assert.deepEqual(fetched, Array.from(sources, source => source.feedUrl));
   assert.equal(results[0].error, null);
   assert.deepEqual(Array.from(results[0].items), []);
   assert.match(String(results[1].error), /second source failed/);
