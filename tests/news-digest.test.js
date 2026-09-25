@@ -395,24 +395,79 @@ test('email normalization failure is isolated; only successfully processed messa
 
 test('XML parser accepts RSS 2.0, Atom and RSS 1.0/RDF but rejects unknown or mismatched roots', () => {
   const { exports, context } = loadStandalone();
-  const root = (name, namespace) => ({
+  // XmlService の要素ツリーを模擬する。実際の XML パーサー・名前空間解決は GAS 実機で別途確認する。
+  const element = (name, namespace = '', value = '', children = [], attributes = {}) => ({
     getName() { return name; },
     getNamespace() { return { getURI() { return namespace; } }; },
-    getChildren() { return []; }
+    getChildren() { return children; },
+    getValue() { return value; },
+    getAttribute(key) {
+      return Object.hasOwn(attributes, key)
+        ? { getValue() { return attributes[key]; } }
+        : null;
+    }
   });
-  context.XmlService.parse = xml => ({ getRootElement() {
-    const [name, namespace] = xml.split('|');
-    return root(name, namespace || '');
-  } });
+  const atomNs = 'http://www.w3.org/2005/Atom';
+  const rdfNs = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
+  const rss1Ns = 'http://purl.org/rss/1.0/';
+  const rssItem = element('item', '', '', [
+    element('title', '', 'RSS 2 article'),
+    element('description', '', '<p>RSS 2 body</p>'),
+    element('link', '', 'https://example.test/rss-article'),
+    element('guid', '', 'rss-guid-1'),
+    element('pubDate', '', 'Fri, 25 Sep 2026 00:00:00 GMT')
+  ]);
+  const atomEntry = element('entry', atomNs, '', [
+    element('title', atomNs, 'Atom article'),
+    element('summary', atomNs, '<p>Atom body</p>'),
+    element('link', atomNs, '', [], { href: 'https://example.test/atom-article', rel: 'alternate' }),
+    element('id', atomNs, 'tag:example.test,2026:atom-1'),
+    element('updated', atomNs, '2026-09-25T01:00:00Z')
+  ]);
+  const rdfItem = element('item', rss1Ns, '', [
+    element('title', rss1Ns, 'RDF article'),
+    element('description', rss1Ns, '<p>RDF body</p>'),
+    element('link', rss1Ns, 'https://example.test/rdf-article'),
+    element('date', 'http://purl.org/dc/elements/1.1/', '2026-09-25T02:00:00Z')
+  ], { about: 'https://example.test/rdf-article' });
+  const fixtures = {
+    rss2: element('rss', '', '', [element('channel', '', '', [rssItem])]),
+    atom: element('feed', atomNs, '', [atomEntry]),
+    rdf: element('RDF', rdfNs, '', [rdfItem]),
+    unknown: element('html', '', '', [element('item', '', '', [rssItem])]),
+    wrongRdf: element('RDF', 'https://example.test/not-rdf', '', [rdfItem]),
+    wrongAtom: element('feed', 'https://example.test/not-atom', '', [atomEntry])
+  };
+  context.XmlService.parse = fixture => ({
+    getRootElement() {
+      assert.ok(Object.hasOwn(fixtures, fixture), 'unknown XML fixture key: ' + fixture);
+      return fixtures[fixture];
+    }
+  });
   const source = { id: 'format', name: 'Format', feedUrl: 'https://example.test/rss' };
-  assert.deepEqual(Array.from(exports.parseFeed('rss|', source)), []);
-  assert.deepEqual(Array.from(exports.parseFeed('feed|http://www.w3.org/2005/Atom', source)), []);
-  assert.deepEqual(Array.from(exports.parseFeed(
-    'RDF|http://www.w3.org/1999/02/22-rdf-syntax-ns#', source
-  )), []);
-  assert.throws(() => exports.parseFeed('html|', source), /XML|feed|RSS|形式|root|ルート/i);
-  assert.throws(() => exports.parseFeed('RDF|https://example.test/not-rdf', source),
-    /XML|feed|RSS|形式|root|ルート/i);
-  assert.throws(() => exports.parseFeed('feed|https://example.test/not-atom', source),
-    /XML|feed|RSS|形式|root|ルート/i);
+  const expectedId = value => crypto.createHash('sha256').update(value, 'utf8').digest('base64url');
+  for (const [fixture, title, content, url, stableId, timestamp] of [
+    ['rss2', 'RSS 2 article', 'RSS 2 body', 'https://example.test/rss-article',
+      'rss-guid-1', '2026-09-25T00:00:00.000Z'],
+    ['atom', 'Atom article', 'Atom body', 'https://example.test/atom-article',
+      'tag:example.test,2026:atom-1', '2026-09-25T01:00:00.000Z'],
+    ['rdf', 'RDF article', 'RDF body', 'https://example.test/rdf-article',
+      'https://example.test/rdf-article', '2026-09-25T02:00:00.000Z']
+  ]) {
+    const items = exports.parseFeed(fixture, source);
+    assert.equal(items.length, 1, fixture + ' must extract one real article');
+    const item = items[0];
+    assert.equal(item.type, 'rss', fixture);
+    assert.equal(item.sourceId, source.id, fixture);
+    assert.equal(item.source, source.name, fixture);
+    assert.equal(item.title, title, fixture);
+    assert.equal(item.content, content, fixture);
+    assert.equal(item.url, url, fixture);
+    assert.equal(item.id, expectedId(stableId), fixture);
+    assert.equal(item.publishedAt.toISOString(), timestamp, fixture);
+  }
+  for (const fixture of ['unknown', 'wrongRdf', 'wrongAtom']) {
+    assert.throws(() => exports.parseFeed(fixture, source),
+      /XML|feed|RSS|形式|root|ルート/i, fixture + ' must fail explicitly');
+  }
 });
